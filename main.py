@@ -3,12 +3,21 @@ import json
 import os
 import sqlite3
 from copy import deepcopy
+from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 from dash import ALL, Dash, Input, Output, State, callback_context, dash_table, dcc, html, no_update
 
+try:
+    import psycopg2
+except ImportError:
+    psycopg2 = None
+
 
 DB_PATH = Path(os.getenv("DATABASE_PATH", Path(__file__).with_name("license_app.db")))
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+USE_POSTGRES = bool(DATABASE_URL)
 
 DEFAULT_LICENSES = {
     "День": [
@@ -31,19 +40,107 @@ THEMES = {
 }
 
 
+def get_connection():
+    if USE_POSTGRES:
+        if psycopg2 is None:
+            raise RuntimeError("Для PostgreSQL нужен пакет psycopg2-binary.")
+        return psycopg2.connect(DATABASE_URL)
+    connection = sqlite3.connect(DB_PATH)
+    return connection
+
+
+def now_iso() -> str:
+    return datetime.now().isoformat(timespec="seconds")
+
+
 def init_db() -> None:
-    with sqlite3.connect(DB_PATH) as connection:
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT NOT NULL UNIQUE,
-                password_hash TEXT NOT NULL,
-                theme TEXT NOT NULL,
-                tariffs_json TEXT NOT NULL,
-                records_json TEXT NOT NULL
+    with get_connection() as connection:
+        cursor = connection.cursor()
+        if USE_POSTGRES:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS users (
+                    id SERIAL PRIMARY KEY,
+                    username TEXT NOT NULL UNIQUE,
+                    password_hash TEXT NOT NULL,
+                    theme TEXT NOT NULL,
+                    tariffs_json TEXT NOT NULL,
+                    draft_records_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
             )
-            """
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS action_logs (
+                    id SERIAL PRIMARY KEY,
+                    username TEXT NOT NULL,
+                    action_type TEXT NOT NULL,
+                    details_json TEXT NOT NULL,
+                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+        else:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT NOT NULL UNIQUE,
+                    password_hash TEXT NOT NULL,
+                    theme TEXT NOT NULL,
+                    tariffs_json TEXT NOT NULL,
+                    draft_records_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS action_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT NOT NULL,
+                    action_type TEXT NOT NULL,
+                    details_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+        connection.commit()
+
+
+def fetchone(query: str, params: tuple = ()) -> tuple | None:
+    with get_connection() as connection:
+        cursor = connection.cursor()
+        cursor.execute(query, params)
+        return cursor.fetchone()
+
+
+def fetchall(query: str, params: tuple = ()) -> list[tuple]:
+    with get_connection() as connection:
+        cursor = connection.cursor()
+        cursor.execute(query, params)
+        return cursor.fetchall()
+
+
+def execute(query: str, params: tuple = ()) -> None:
+    with get_connection() as connection:
+        cursor = connection.cursor()
+        cursor.execute(query, params)
+        connection.commit()
+
+
+def add_action_log(username: str, action_type: str, details: dict) -> None:
+    payload = json.dumps(details, ensure_ascii=False)
+    if USE_POSTGRES:
+        execute(
+            "INSERT INTO action_logs (username, action_type, details_json) VALUES (%s, %s, %s)",
+            (username, action_type, payload),
+        )
+    else:
+        execute(
+            "INSERT INTO action_logs (username, action_type, details_json) VALUES (?, ?, ?)",
+            (username, action_type, payload),
         )
 
 
@@ -74,10 +171,24 @@ def format_money(amount: int) -> str:
 
 def create_user(username: str, password: str) -> tuple[bool, str]:
     try:
-        with sqlite3.connect(DB_PATH) as connection:
-            connection.execute(
+        if USE_POSTGRES:
+            execute(
                 """
-                INSERT INTO users (username, password_hash, theme, tariffs_json, records_json)
+                INSERT INTO users (username, password_hash, theme, tariffs_json, draft_records_json)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (
+                    username,
+                    hash_password(password),
+                    "Светлая",
+                    json.dumps(clone_tariffs(), ensure_ascii=False),
+                    json.dumps([], ensure_ascii=False),
+                ),
+            )
+        else:
+            execute(
+                """
+                INSERT INTO users (username, password_hash, theme, tariffs_json, draft_records_json)
                 VALUES (?, ?, ?, ?, ?)
                 """,
                 (
@@ -88,48 +199,125 @@ def create_user(username: str, password: str) -> tuple[bool, str]:
                     json.dumps([], ensure_ascii=False),
                 ),
             )
+        add_action_log(username, "register", {"message": "Регистрация нового пользователя"})
         return True, "Аккаунт создан. Можно входить."
-    except sqlite3.IntegrityError:
+    except Exception as error:
+        if "unique" in str(error).lower():
+            return False, "Пользователь с таким логином уже существует."
         return False, "Пользователь с таким логином уже существует."
 
 
 def verify_user(username: str, password: str) -> bool:
-    with sqlite3.connect(DB_PATH) as connection:
-        row = connection.execute(
-            "SELECT password_hash FROM users WHERE username = ?",
-            (username,),
-        ).fetchone()
+    if USE_POSTGRES:
+        row = fetchone("SELECT password_hash FROM users WHERE username = %s", (username,))
+    else:
+        row = fetchone("SELECT password_hash FROM users WHERE username = ?", (username,))
     return bool(row and row[0] == hash_password(password))
 
 
 def load_user_state(username: str) -> dict | None:
-    with sqlite3.connect(DB_PATH) as connection:
-        row = connection.execute(
-            "SELECT theme, tariffs_json, records_json FROM users WHERE username = ?",
+    if USE_POSTGRES:
+        row = fetchone(
+            "SELECT theme, tariffs_json, draft_records_json FROM users WHERE username = %s",
             (username,),
-        ).fetchone()
+        )
+    else:
+        row = fetchone(
+            "SELECT theme, tariffs_json, draft_records_json FROM users WHERE username = ?",
+            (username,),
+        )
     if not row:
         return None
-    theme, tariffs_json, records_json = row
+    theme, tariffs_json, draft_records_json = row
     tariffs = json.loads(tariffs_json)
-    return {"username": username, "theme": theme, "tariffs": tariffs, "records": []}
+    records = [normalize_record(record) for record in json.loads(draft_records_json or "[]")]
+    return {"username": username, "theme": theme, "tariffs": tariffs, "records": records}
 
 
 def save_user_state(username: str, theme: str, tariffs: dict, records: list[dict]) -> None:
-    with sqlite3.connect(DB_PATH) as connection:
-        connection.execute(
+    normalized_records = [normalize_record(record) for record in records]
+    if USE_POSTGRES:
+        execute(
             """
             UPDATE users
-            SET theme = ?, tariffs_json = ?, records_json = ?
+            SET theme = %s, tariffs_json = %s, draft_records_json = %s
+            WHERE username = %s
+            """,
+            (
+                theme,
+                json.dumps(tariffs, ensure_ascii=False),
+                json.dumps(normalized_records, ensure_ascii=False),
+                username,
+            ),
+        )
+    else:
+        execute(
+            """
+            UPDATE users
+            SET theme = ?, tariffs_json = ?, draft_records_json = ?
             WHERE username = ?
             """,
             (
                 theme,
                 json.dumps(tariffs, ensure_ascii=False),
-                json.dumps([], ensure_ascii=False),
+                json.dumps(normalized_records, ensure_ascii=False),
                 username,
             ),
         )
+
+
+def fetch_action_logs(username: str, limit: int = 200) -> list[dict]:
+    if USE_POSTGRES:
+        rows = fetchall(
+            "SELECT action_type, details_json, created_at FROM action_logs WHERE username = %s ORDER BY created_at DESC LIMIT %s",
+            (username, limit),
+        )
+    else:
+        rows = fetchall(
+            "SELECT action_type, details_json, created_at FROM action_logs WHERE username = ? ORDER BY created_at DESC LIMIT ?",
+            (username, limit),
+        )
+    logs = []
+    for action_type, details_json, created_at in rows:
+        details = json.loads(details_json or "{}")
+        logs.append(
+            {
+                "Время": str(created_at),
+                "Действие": action_type,
+                "Описание": details.get("message", ""),
+                "Детали": json.dumps(details, ensure_ascii=False),
+            }
+        )
+    return logs
+
+
+def fetch_license_history(username: str) -> list[dict]:
+    if USE_POSTGRES:
+        rows = fetchall(
+            "SELECT details_json, created_at FROM action_logs WHERE username = %s AND action_type = %s ORDER BY created_at DESC",
+            (username, "add_license"),
+        )
+    else:
+        rows = fetchall(
+            "SELECT details_json, created_at FROM action_logs WHERE username = ? AND action_type = ? ORDER BY created_at DESC",
+            (username, "add_license"),
+        )
+    history = []
+    for details_json, created_at in rows:
+        details = json.loads(details_json or "{}")
+        history.append(
+            {
+                "Дата": str(created_at).split(" ")[0].split("T")[0],
+                "Время": details.get("period", ""),
+                "Код": details.get("code", ""),
+                "Лицензия": details.get("name", ""),
+                "Статус": details.get("status", ""),
+                "Продажа": format_money(int(details.get("price", 0))),
+                "В казну": format_money(int(details.get("treasury", 0))),
+                "На руки": format_money(int(details.get("cash", 0))),
+            }
+        )
+    return history
 
 
 def build_breakdown(records: list[dict]) -> str:
@@ -463,6 +651,85 @@ def app_layout() -> html.Div:
                                             )
                                         ],
                                     ),
+                                    dcc.Tab(
+                                        label="История",
+                                        value="history",
+                                        className="main-tab",
+                                        selected_className="main-tab-selected",
+                                        children=[
+                                            html.Div(
+                                                className="settings-grid fade-up",
+                                                children=[
+                                                    html.Div(
+                                                        className="panel",
+                                                        children=[
+                                                            html.Div("История по датам и сменам", className="panel-title"),
+                                                            html.Div("Фильтруй прошлые оформления по дате и времени суток.", className="panel-subtitle"),
+                                                            html.Div(
+                                                                className="history-filters",
+                                                                children=[
+                                                                    dcc.DatePickerRange(id="history-dates", display_format="YYYY-MM-DD"),
+                                                                    dcc.Dropdown(
+                                                                        id="history-period",
+                                                                        options=[
+                                                                            {"label": "Все смены", "value": "all"},
+                                                                            {"label": "День", "value": "День"},
+                                                                            {"label": "Ночь", "value": "Ночь"},
+                                                                        ],
+                                                                        value="all",
+                                                                        clearable=False,
+                                                                        searchable=False,
+                                                                    ),
+                                                                ],
+                                                            ),
+                                                        ],
+                                                    ),
+                                                    html.Div(
+                                                        className="panel",
+                                                        children=[
+                                                            html.Div("Архив лицензий", className="panel-title"),
+                                                            dash_table.DataTable(
+                                                                id="history-table",
+                                                                columns=[{"name": name, "id": name} for name in ["Дата", "Время", "Код", "Лицензия", "Статус", "Продажа", "В казну", "На руки"]],
+                                                                data=[],
+                                                                page_size=12,
+                                                                style_table={"overflowX": "auto"},
+                                                                style_cell={"padding": "14px 12px", "whiteSpace": "normal", "height": "auto", "lineHeight": "1.45", "textAlign": "left"},
+                                                            ),
+                                                        ],
+                                                    ),
+                                                ],
+                                            )
+                                        ],
+                                    ),
+                                    dcc.Tab(
+                                        label="Журнал",
+                                        value="journal",
+                                        className="main-tab",
+                                        selected_className="main-tab-selected",
+                                        children=[
+                                            html.Div(
+                                                className="settings-grid fade-up",
+                                                children=[
+                                                    html.Div(
+                                                        className="panel",
+                                                        children=[
+                                                            html.Div("Журнал действий", className="panel-title"),
+                                                            html.Div("Показывает входы, сохранения, добавления и удаления лицензий.", className="panel-subtitle"),
+                                                            dash_table.DataTable(
+                                                                id="journal-table",
+                                                                columns=[{"name": name, "id": name} for name in ["Время", "Действие", "Описание"]],
+                                                                data=[],
+                                                                page_size=12,
+                                                                style_table={"overflowX": "auto"},
+                                                                style_cell={"padding": "14px 12px", "whiteSpace": "normal", "height": "auto", "lineHeight": "1.45", "textAlign": "left"},
+                                                            ),
+                                                        ],
+                                                    ),
+                                                ],
+                                            )
+                                        ],
+                                    ),
                                 ],
                             ),
                         ],
@@ -500,6 +767,7 @@ def handle_auth(_, mode: str, username: str | None, password: str | None):
             return no_update, message
     elif not verify_user(username, password):
         return no_update, "Неверный логин или пароль."
+    add_action_log(username, "login", {"message": "Вход в систему"})
     return username, "Успешный вход."
 
 
@@ -620,6 +888,7 @@ def render_license_list(tariffs: dict | None, period: str | None):
     Output("click-state", "data", allow_duplicate=True),
     Input({"type": "add-license", "period": ALL, "code": ALL, "status": ALL}, "n_clicks"),
     Input("delete-row-btn", "n_clicks"),
+    State("session-user", "data"),
     State("tariffs-store", "data"),
     State("records-store", "data"),
     State("records-table", "selected_rows"),
@@ -627,7 +896,7 @@ def render_license_list(tariffs: dict | None, period: str | None):
     State("click-state", "data"),
     prevent_initial_call=True,
 )
-def mutate_records(clicks, delete_clicks, tariffs: dict, records: list[dict] | None, selected_rows: list[int] | None, button_ids, click_state: dict | None):
+def mutate_records(clicks, delete_clicks, session_user: str | None, tariffs: dict, records: list[dict] | None, selected_rows: list[int] | None, button_ids, click_state: dict | None):
     records = [normalize_record(record) for record in (records or [])]
     click_state = click_state or {}
     trigger = callback_context.triggered_id
@@ -655,12 +924,37 @@ def mutate_records(clicks, delete_clicks, tariffs: dict, records: list[dict] | N
                     }
                 )
                 click_state[key] = current_clicks
+                if session_user:
+                    add_action_log(
+                        session_user,
+                        "add_license",
+                        {
+                            "message": f"Добавлена лицензия {item['code']} ({status})",
+                            "period": period,
+                            "code": item["code"],
+                            "name": item["name"],
+                            "status": status,
+                            "price": int(item["price"]),
+                            "treasury": int(item["treasury"]),
+                            "cash": int(item["cash"]),
+                        },
+                    )
                 return records, click_state
             click_state[key] = current_clicks
         return no_update, click_state
     if trigger == "delete-row-btn" and selected_rows:
         selected_set = set(selected_rows)
+        removed = [record for index, record in enumerate(records) if index in selected_set]
         records = [record for index, record in enumerate(records) if index not in selected_set]
+        if session_user and removed:
+            add_action_log(
+                session_user,
+                "delete_license",
+                {
+                    "message": f"Удалено лицензий: {len(removed)}",
+                    "items": removed,
+                },
+            )
         return records, click_state
     return no_update, click_state
 
@@ -671,12 +965,13 @@ def mutate_records(clicks, delete_clicks, tariffs: dict, records: list[dict] | N
     Output("settings-message", "children"),
     Output("main-tabs", "value", allow_duplicate=True),
     Input("save-settings-btn", "n_clicks"),
+    State("session-user", "data"),
     State("user-theme", "data"),
     State("day-tariffs-table", "data"),
     State("night-tariffs-table", "data"),
     prevent_initial_call=True,
 )
-def save_settings(_, theme: str, day_rows: list[dict], night_rows: list[dict]):
+def save_settings(_, session_user: str | None, theme: str, day_rows: list[dict], night_rows: list[dict]):
     try:
         tariffs = merge_tariff_tables(day_rows, night_rows)
         for period in tariffs:
@@ -685,6 +980,8 @@ def save_settings(_, theme: str, day_rows: list[dict], night_rows: list[dict]):
                     return no_update, no_update, "Значения не могут быть отрицательными.", "settings"
     except Exception:
         return no_update, no_update, "Проверь значения в тарифах: нужны целые числа.", "settings"
+    if session_user:
+        add_action_log(session_user, "save_settings", {"message": "Сохранены тарифы и тема", "theme": theme})
     return tariffs, theme, "Настройки сохранены.", "work"
 
 
@@ -692,15 +989,14 @@ def save_settings(_, theme: str, day_rows: list[dict], night_rows: list[dict]):
     Output("day-tariffs-table", "style_data"),
     Output("night-tariffs-table", "style_data"),
     Output("records-table", "style_data"),
+    Output("history-table", "style_data"),
+    Output("journal-table", "style_data"),
     Input("user-theme", "data"),
 )
 def table_styles(theme: str | None):
     palette = THEMES[theme or "Светлая"]
-    return (
-        {"backgroundColor": "#ffffff" if palette["page"] == "theme-light" else "#1b2129", "color": "#26313d" if palette["page"] == "theme-light" else "#eff3f8"},
-        {"backgroundColor": "#ffffff" if palette["page"] == "theme-light" else "#1b2129", "color": "#26313d" if palette["page"] == "theme-light" else "#eff3f8"},
-        {"backgroundColor": "#ffffff" if palette["page"] == "theme-light" else "#1b2129", "color": "#26313d" if palette["page"] == "theme-light" else "#eff3f8"},
-    )
+    style = {"backgroundColor": "#ffffff" if palette["page"] == "theme-light" else "#1b2129", "color": "#26313d" if palette["page"] == "theme-light" else "#eff3f8"}
+    return (style, style, style, style, style)
 
 
 @app.callback(
@@ -726,6 +1022,31 @@ def persist_state(username: str | None, tariffs: dict | None, records: list[dict
         save_user_state(username, theme, tariffs, [normalize_record(record) for record in records])
         return f"Пользователь: {username}"
     return no_update
+
+
+@app.callback(
+    Output("history-table", "data"),
+    Output("journal-table", "data"),
+    Input("session-user", "data"),
+    Input("records-store", "data"),
+    Input("tariffs-store", "data"),
+    Input("user-theme", "data"),
+    Input("history-dates", "start_date"),
+    Input("history-dates", "end_date"),
+    Input("history-period", "value"),
+)
+def render_history_and_journal(username: str | None, records, tariffs, theme, start_date: str | None, end_date: str | None, period_value: str | None):
+    if not username:
+        return [], []
+    history = fetch_license_history(username)
+    if start_date:
+        history = [row for row in history if row["Дата"] >= start_date]
+    if end_date:
+        history = [row for row in history if row["Дата"] <= end_date]
+    if period_value and period_value != "all":
+        history = [row for row in history if row["Время"] == period_value]
+    journal = [{key: row[key] for key in ("Время", "Действие", "Описание")} for row in fetch_action_logs(username)]
+    return history, journal
 
 
 if __name__ == "__main__":
