@@ -169,6 +169,29 @@ def format_money(amount: int) -> str:
     return f"{amount:,}".replace(",", " ") + " ₽"
 
 
+def year_options() -> list[dict]:
+    current_year = datetime.now().year
+    return [{"label": str(year), "value": str(year)} for year in range(current_year - 3, current_year + 4)]
+
+
+def month_options() -> list[dict]:
+    months = [
+        ("01", "Январь"),
+        ("02", "Февраль"),
+        ("03", "Март"),
+        ("04", "Апрель"),
+        ("05", "Май"),
+        ("06", "Июнь"),
+        ("07", "Июль"),
+        ("08", "Август"),
+        ("09", "Сентябрь"),
+        ("10", "Октябрь"),
+        ("11", "Ноябрь"),
+        ("12", "Декабрь"),
+    ]
+    return [{"label": name, "value": value} for value, name in months]
+
+
 def create_user(username: str, password: str) -> tuple[bool, str]:
     try:
         if USE_POSTGRES:
@@ -676,6 +699,20 @@ def app_layout() -> html.Div:
                                                                         minimum_nights=0,
                                                                     ),
                                                                     dcc.Dropdown(
+                                                                        id="history-year",
+                                                                        options=year_options(),
+                                                                        placeholder="Год",
+                                                                        clearable=True,
+                                                                        searchable=False,
+                                                                    ),
+                                                                    dcc.Dropdown(
+                                                                        id="history-month",
+                                                                        options=month_options(),
+                                                                        placeholder="Месяц",
+                                                                        clearable=True,
+                                                                        searchable=False,
+                                                                    ),
+                                                                    dcc.Dropdown(
                                                                         id="history-period",
                                                                         options=[
                                                                             {"label": "Все смены", "value": "all"},
@@ -1039,9 +1076,11 @@ def persist_state(username: str | None, tariffs: dict | None, records: list[dict
     Input("user-theme", "data"),
     Input("history-dates", "start_date"),
     Input("history-dates", "end_date"),
+    Input("history-year", "value"),
+    Input("history-month", "value"),
     Input("history-period", "value"),
 )
-def render_history_and_journal(username: str | None, records, tariffs, theme, start_date: str | None, end_date: str | None, period_value: str | None):
+def render_history_and_journal(username: str | None, records, tariffs, theme, start_date: str | None, end_date: str | None, year_value: str | None, month_value: str | None, period_value: str | None):
     if not username:
         return [], []
     history = fetch_license_history(username)
@@ -1049,6 +1088,10 @@ def render_history_and_journal(username: str | None, records, tariffs, theme, st
         history = [row for row in history if row["Дата"] >= start_date]
     if end_date:
         history = [row for row in history if row["Дата"] <= end_date]
+    if year_value:
+        history = [row for row in history if row["Дата"][:4] == year_value]
+    if month_value:
+        history = [row for row in history if row["Дата"][5:7] == month_value]
     if period_value and period_value != "all":
         history = [row for row in history if row["Время"] == period_value]
     journal = [{key: row[key] for key in ("Время", "Действие", "Описание")} for row in fetch_action_logs(username)]
