@@ -63,6 +63,7 @@ def init_db() -> None:
                     id SERIAL PRIMARY KEY,
                     username TEXT NOT NULL UNIQUE,
                     password_hash TEXT NOT NULL,
+                    role TEXT NOT NULL DEFAULT 'user',
                     theme TEXT NOT NULL,
                     tariffs_json TEXT NOT NULL,
                     draft_records_json TEXT NOT NULL DEFAULT '[]',
@@ -88,6 +89,7 @@ def init_db() -> None:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     username TEXT NOT NULL UNIQUE,
                     password_hash TEXT NOT NULL,
+                    role TEXT NOT NULL DEFAULT 'user',
                     theme TEXT NOT NULL,
                     tariffs_json TEXT NOT NULL,
                     draft_records_json TEXT NOT NULL DEFAULT '[]',
@@ -107,6 +109,14 @@ def init_db() -> None:
                 """
             )
         connection.commit()
+        try:
+            if USE_POSTGRES:
+                cursor.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
+            else:
+                cursor.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
+            connection.commit()
+        except Exception:
+            connection.rollback()
 
 
 def fetchone(query: str, params: tuple = ()) -> tuple | None:
@@ -128,6 +138,14 @@ def execute(query: str, params: tuple = ()) -> None:
         cursor = connection.cursor()
         cursor.execute(query, params)
         connection.commit()
+
+
+def users_count() -> int:
+    if USE_POSTGRES:
+        row = fetchone("SELECT COUNT(*) FROM users")
+    else:
+        row = fetchone("SELECT COUNT(*) FROM users")
+    return int(row[0]) if row else 0
 
 
 def add_action_log(username: str, action_type: str, details: dict) -> None:
@@ -194,15 +212,17 @@ def month_options() -> list[dict]:
 
 def create_user(username: str, password: str) -> tuple[bool, str]:
     try:
+        role = "admin" if users_count() == 0 else "user"
         if USE_POSTGRES:
             execute(
                 """
-                INSERT INTO users (username, password_hash, theme, tariffs_json, draft_records_json)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO users (username, password_hash, role, theme, tariffs_json, draft_records_json)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 """,
                 (
                     username,
                     hash_password(password),
+                    role,
                     "Светлая",
                     json.dumps(clone_tariffs(), ensure_ascii=False),
                     json.dumps([], ensure_ascii=False),
@@ -211,18 +231,19 @@ def create_user(username: str, password: str) -> tuple[bool, str]:
         else:
             execute(
                 """
-                INSERT INTO users (username, password_hash, theme, tariffs_json, draft_records_json)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO users (username, password_hash, role, theme, tariffs_json, draft_records_json)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     username,
                     hash_password(password),
+                    role,
                     "Светлая",
                     json.dumps(clone_tariffs(), ensure_ascii=False),
                     json.dumps([], ensure_ascii=False),
                 ),
             )
-        add_action_log(username, "register", {"message": "Регистрация нового пользователя"})
+        add_action_log(username, "register", {"message": "Регистрация нового пользователя", "role": role})
         return True, "Аккаунт создан. Можно входить."
     except Exception as error:
         if "unique" in str(error).lower():
@@ -241,20 +262,20 @@ def verify_user(username: str, password: str) -> bool:
 def load_user_state(username: str) -> dict | None:
     if USE_POSTGRES:
         row = fetchone(
-            "SELECT theme, tariffs_json, draft_records_json FROM users WHERE username = %s",
+            "SELECT role, theme, tariffs_json, draft_records_json FROM users WHERE username = %s",
             (username,),
         )
     else:
         row = fetchone(
-            "SELECT theme, tariffs_json, draft_records_json FROM users WHERE username = ?",
+            "SELECT role, theme, tariffs_json, draft_records_json FROM users WHERE username = ?",
             (username,),
         )
     if not row:
         return None
-    theme, tariffs_json, draft_records_json = row
+    role, theme, tariffs_json, draft_records_json = row
     tariffs = json.loads(tariffs_json)
     records = [normalize_record(record) for record in json.loads(draft_records_json or "[]")]
-    return {"username": username, "theme": theme, "tariffs": tariffs, "records": records}
+    return {"username": username, "role": role, "theme": theme, "tariffs": tariffs, "records": records}
 
 
 def save_user_state(username: str, theme: str, tariffs: dict, records: list[dict]) -> None:
@@ -290,21 +311,26 @@ def save_user_state(username: str, theme: str, tariffs: dict, records: list[dict
 
 
 def fetch_action_logs(username: str, limit: int = 200) -> list[dict]:
+    state = load_user_state(username)
+    is_admin = bool(state and state.get("role") == "admin")
     if USE_POSTGRES:
         rows = fetchall(
-            "SELECT action_type, details_json, created_at FROM action_logs WHERE username = %s ORDER BY created_at DESC LIMIT %s",
-            (username, limit),
+            "SELECT username, action_type, details_json, created_at FROM action_logs "
+            + ("ORDER BY created_at DESC LIMIT %s" if is_admin else "WHERE username = %s ORDER BY created_at DESC LIMIT %s"),
+            ((limit,) if is_admin else (username, limit)),
         )
     else:
         rows = fetchall(
-            "SELECT action_type, details_json, created_at FROM action_logs WHERE username = ? ORDER BY created_at DESC LIMIT ?",
-            (username, limit),
+            "SELECT username, action_type, details_json, created_at FROM action_logs "
+            + ("ORDER BY created_at DESC LIMIT ?" if is_admin else "WHERE username = ? ORDER BY created_at DESC LIMIT ?"),
+            ((limit,) if is_admin else (username, limit)),
         )
     logs = []
-    for action_type, details_json, created_at in rows:
+    for actor, action_type, details_json, created_at in rows:
         details = json.loads(details_json or "{}")
         logs.append(
             {
+                "Пользователь": actor,
                 "Время": str(created_at),
                 "Действие": action_type,
                 "Описание": details.get("message", ""),
@@ -315,21 +341,26 @@ def fetch_action_logs(username: str, limit: int = 200) -> list[dict]:
 
 
 def fetch_license_history(username: str) -> list[dict]:
+    state = load_user_state(username)
+    is_admin = bool(state and state.get("role") == "admin")
     if USE_POSTGRES:
         rows = fetchall(
-            "SELECT details_json, created_at FROM action_logs WHERE username = %s AND action_type = %s ORDER BY created_at DESC",
-            (username, "add_license"),
+            "SELECT username, details_json, created_at FROM action_logs "
+            + ("WHERE action_type = %s ORDER BY created_at DESC" if is_admin else "WHERE username = %s AND action_type = %s ORDER BY created_at DESC"),
+            (("add_license",) if is_admin else (username, "add_license")),
         )
     else:
         rows = fetchall(
-            "SELECT details_json, created_at FROM action_logs WHERE username = ? AND action_type = ? ORDER BY created_at DESC",
-            (username, "add_license"),
+            "SELECT username, details_json, created_at FROM action_logs "
+            + ("WHERE action_type = ? ORDER BY created_at DESC" if is_admin else "WHERE username = ? AND action_type = ? ORDER BY created_at DESC"),
+            (("add_license",) if is_admin else (username, "add_license")),
         )
     history = []
-    for details_json, created_at in rows:
+    for actor, details_json, created_at in rows:
         details = json.loads(details_json or "{}")
         history.append(
             {
+                "Пользователь": actor,
                 "Дата": str(created_at).split(" ")[0].split("T")[0],
                 "Время": details.get("period", ""),
                 "Код": details.get("code", ""),
@@ -466,6 +497,7 @@ def app_layout() -> html.Div:
     return html.Div(
         [
             dcc.Store(id="session-user", storage_type="local"),
+            dcc.Store(id="user-role"),
             dcc.Store(id="user-theme"),
             dcc.Store(id="tariffs-store"),
             dcc.Store(id="records-store"),
@@ -675,6 +707,7 @@ def app_layout() -> html.Div:
                                         ],
                                     ),
                                     dcc.Tab(
+                                        id="history-tab",
                                         label="История",
                                         value="history",
                                         className="main-tab",
@@ -706,31 +739,6 @@ def app_layout() -> html.Div:
                                                                             ),
                                                                         ],
                                                                     ),
-                                                                    dcc.Dropdown(
-                                                                        id="history-year",
-                                                                        options=year_options(),
-                                                                        placeholder="Год",
-                                                                        clearable=True,
-                                                                        searchable=False,
-                                                                    ),
-                                                                    dcc.Dropdown(
-                                                                        id="history-month",
-                                                                        options=month_options(),
-                                                                        placeholder="Месяц",
-                                                                        clearable=True,
-                                                                        searchable=False,
-                                                                    ),
-                                                                    dcc.Dropdown(
-                                                                        id="history-period",
-                                                                        options=[
-                                                                            {"label": "Все смены", "value": "all"},
-                                                                            {"label": "День", "value": "День"},
-                                                                            {"label": "Ночь", "value": "Ночь"},
-                                                                        ],
-                                                                        value="all",
-                                                                        clearable=False,
-                                                                        searchable=False,
-                                                                    ),
                                                                 ],
                                                             ),
                                                         ],
@@ -741,7 +749,7 @@ def app_layout() -> html.Div:
                                                             html.Div("Архив лицензий", className="panel-title"),
                                                             dash_table.DataTable(
                                                                 id="history-table",
-                                                                columns=[{"name": name, "id": name} for name in ["Дата", "Время", "Код", "Лицензия", "Статус", "Продажа", "В казну", "На руки"]],
+                                                                columns=[{"name": name, "id": name} for name in ["Пользователь", "Дата", "Время", "Код", "Лицензия", "Статус", "Продажа", "В казну", "На руки"]],
                                                                 data=[],
                                                                 page_size=12,
                                                                 style_table={"overflowX": "auto"},
@@ -754,6 +762,7 @@ def app_layout() -> html.Div:
                                         ],
                                     ),
                                     dcc.Tab(
+                                        id="journal-tab",
                                         label="Журнал",
                                         value="journal",
                                         className="main-tab",
@@ -769,7 +778,7 @@ def app_layout() -> html.Div:
                                                             html.Div("Показывает входы, сохранения, добавления и удаления лицензий.", className="panel-subtitle"),
                                                             dash_table.DataTable(
                                                                 id="journal-table",
-                                                                columns=[{"name": name, "id": name} for name in ["Время", "Действие", "Описание"]],
+                                                                columns=[{"name": name, "id": name} for name in ["Пользователь", "Время", "Действие", "Описание"]],
                                                                 data=[],
                                                                 page_size=12,
                                                                 style_table={"overflowX": "auto"},
@@ -835,6 +844,7 @@ def logout(_):
     Output("auth-screen", "className"),
     Output("app-screen", "className"),
     Output("hero-user", "children"),
+    Output("user-role", "data"),
     Output("user-theme", "data"),
     Output("tariffs-store", "data"),
     Output("records-store", "data"),
@@ -845,16 +855,17 @@ def logout(_):
 )
 def sync_user_session(username: str | None):
     if not username:
-        return "auth-shell", "app-shell hidden", "", "Светлая", clone_tariffs(), [], {}, tariffs_to_table_data(clone_tariffs(), "День"), tariffs_to_table_data(clone_tariffs(), "Ночь")
+        return "auth-shell", "app-shell hidden", "", "user", "Светлая", clone_tariffs(), [], {}, tariffs_to_table_data(clone_tariffs(), "День"), tariffs_to_table_data(clone_tariffs(), "Ночь")
     state = load_user_state(username)
     if not state:
-        return "auth-shell", "app-shell hidden", "", "Светлая", clone_tariffs(), [], {}, tariffs_to_table_data(clone_tariffs(), "День"), tariffs_to_table_data(clone_tariffs(), "Ночь")
+        return "auth-shell", "app-shell hidden", "", "user", "Светлая", clone_tariffs(), [], {}, tariffs_to_table_data(clone_tariffs(), "День"), tariffs_to_table_data(clone_tariffs(), "Ночь")
     tariffs = state["tariffs"]
     records = state["records"]
     return (
         "auth-shell hidden",
         "app-shell",
         f"Пользователь: {username}",
+        state["role"],
         state["theme"],
         tariffs,
         records,
@@ -906,6 +917,25 @@ def switch_period(day_clicks, night_clicks, go_settings, current_period):
     if trigger == "night-btn":
         return "Ночь", "work"
     return "День", "work"
+
+
+@app.callback(
+    Output("history-tab", "style"),
+    Output("journal-tab", "style"),
+    Output("history-tab", "disabled"),
+    Output("journal-tab", "disabled"),
+    Output("main-tabs", "value", allow_duplicate=True),
+    Input("user-role", "data"),
+    State("main-tabs", "value"),
+    prevent_initial_call=True,
+)
+def guard_admin_tabs(role: str | None, current_tab: str):
+    is_admin = role == "admin"
+    hidden_style = {} if is_admin else {"display": "none"}
+    next_tab = current_tab
+    if not is_admin and current_tab in {"history", "journal"}:
+        next_tab = "work"
+    return hidden_style, hidden_style, (not is_admin), (not is_admin), next_tab
 
 
 @app.callback(
@@ -1079,30 +1109,22 @@ def persist_state(username: str | None, tariffs: dict | None, records: list[dict
     Output("history-table", "data"),
     Output("journal-table", "data"),
     Input("session-user", "data"),
+    Input("user-role", "data"),
     Input("records-store", "data"),
     Input("tariffs-store", "data"),
     Input("user-theme", "data"),
     Input("history-start-date", "value"),
     Input("history-end-date", "value"),
-    Input("history-year", "value"),
-    Input("history-month", "value"),
-    Input("history-period", "value"),
 )
-def render_history_and_journal(username: str | None, records, tariffs, theme, start_date: str | None, end_date: str | None, year_value: str | None, month_value: str | None, period_value: str | None):
-    if not username:
+def render_history_and_journal(username: str | None, role: str | None, records, tariffs, theme, start_date: str | None, end_date: str | None):
+    if not username or role != "admin":
         return [], []
     history = fetch_license_history(username)
     if start_date:
         history = [row for row in history if row["Дата"] >= start_date]
     if end_date:
         history = [row for row in history if row["Дата"] <= end_date]
-    if year_value:
-        history = [row for row in history if row["Дата"][:4] == year_value]
-    if month_value:
-        history = [row for row in history if row["Дата"][5:7] == month_value]
-    if period_value and period_value != "all":
-        history = [row for row in history if row["Время"] == period_value]
-    journal = [{key: row[key] for key in ("Время", "Действие", "Описание")} for row in fetch_action_logs(username)]
+    journal = [{key: row[key] for key in ("Пользователь", "Время", "Действие", "Описание")} for row in fetch_action_logs(username)]
     return history, journal
 
 
