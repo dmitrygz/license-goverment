@@ -490,59 +490,22 @@ body {
   z-index: 1 !important;
 }
 
-.history-filters .SingleDatePickerInput,
-.history-filters .DateRangePickerInput,
+.history-date-range {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.history-date-input,
 .history-filters .Select-control,
 .history-filters .select__control {
+  width: 100%;
+  min-height: 52px;
   border-radius: 14px !important;
   border: 1px solid var(--line) !important;
   background: var(--panel-solid) !important;
-}
-
-.DateRangePicker,
-.DateRangePickerInput,
-.DateInput,
-.DateInput_input,
-.DateRangePicker_picker,
-.DateRangePicker_picker__portal,
-.DayPicker,
-.DayPicker_transitionContainer,
-.CalendarMonthGrid,
-.CalendarMonth,
-.DateRangePickerInput__withBorder {
-  z-index: 9999 !important;
-}
-
-.DateRangePicker_picker,
-.DateRangePicker_picker__portal {
-  box-shadow: 0 24px 60px rgba(15, 19, 24, 0.18) !important;
-  position: absolute !important;
-}
-
-.DateRangePicker_picker__portal {
-  position: fixed !important;
-  z-index: 20000 !important;
-}
-
-.history-filter-panel .DateRangePicker_picker,
-.history-filter-panel .DateRangePicker_picker__portal,
-.history-filter-panel .DayPicker,
-.history-filter-panel .DayPicker_transitionContainer {
-  z-index: 10000 !important;
-}
-
-.DateInput,
-.DateInput_input {
-  background: var(--panel-solid) !important;
   color: var(--text) !important;
-}
-
-.DateRangePickerInput {
-  background: var(--panel-solid) !important;
-}
-
-.DateRangePickerInput_arrow {
-  color: var(--muted) !important;
+  padding: 0 14px;
 }
 
 .main-tabs-wrap > div,

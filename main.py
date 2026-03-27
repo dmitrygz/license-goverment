@@ -691,12 +691,20 @@ def app_layout() -> html.Div:
                                                             html.Div(
                                                                 className="history-filters",
                                                                 children=[
-                                                                    dcc.DatePickerRange(
-                                                                        id="history-dates",
-                                                                        display_format="YYYY-MM-DD",
-                                                                        with_portal=True,
-                                                                        number_of_months_shown=1,
-                                                                        minimum_nights=0,
+                                                                    html.Div(
+                                                                        className="history-date-range",
+                                                                        children=[
+                                                                            dcc.Input(
+                                                                                id="history-start-date",
+                                                                                type="date",
+                                                                                className="history-date-input",
+                                                                            ),
+                                                                            dcc.Input(
+                                                                                id="history-end-date",
+                                                                                type="date",
+                                                                                className="history-date-input",
+                                                                            ),
+                                                                        ],
                                                                     ),
                                                                     dcc.Dropdown(
                                                                         id="history-year",
@@ -1074,8 +1082,8 @@ def persist_state(username: str | None, tariffs: dict | None, records: list[dict
     Input("records-store", "data"),
     Input("tariffs-store", "data"),
     Input("user-theme", "data"),
-    Input("history-dates", "start_date"),
-    Input("history-dates", "end_date"),
+    Input("history-start-date", "value"),
+    Input("history-end-date", "value"),
     Input("history-year", "value"),
     Input("history-month", "value"),
     Input("history-period", "value"),
