@@ -258,6 +258,7 @@ def app_layout() -> html.Div:
             dcc.Store(id="user-theme"),
             dcc.Store(id="tariffs-store"),
             dcc.Store(id="records-store"),
+            dcc.Store(id="click-state", data={}),
             dcc.Store(id="selected-period", data="День"),
             html.Div(
                 id="page-root",
@@ -518,16 +519,17 @@ def logout(_):
     Output("user-theme", "data"),
     Output("tariffs-store", "data"),
     Output("records-store", "data"),
+    Output("click-state", "data"),
     Output("day-tariffs-table", "data"),
     Output("night-tariffs-table", "data"),
     Input("session-user", "data"),
 )
 def sync_user_session(username: str | None):
     if not username:
-        return "auth-shell", "app-shell hidden", "", "Светлая", clone_tariffs(), [], tariffs_to_table_data(clone_tariffs(), "День"), tariffs_to_table_data(clone_tariffs(), "Ночь")
+        return "auth-shell", "app-shell hidden", "", "Светлая", clone_tariffs(), [], {}, tariffs_to_table_data(clone_tariffs(), "День"), tariffs_to_table_data(clone_tariffs(), "Ночь")
     state = load_user_state(username)
     if not state:
-        return "auth-shell", "app-shell hidden", "", "Светлая", clone_tariffs(), [], tariffs_to_table_data(clone_tariffs(), "День"), tariffs_to_table_data(clone_tariffs(), "Ночь")
+        return "auth-shell", "app-shell hidden", "", "Светлая", clone_tariffs(), [], {}, tariffs_to_table_data(clone_tariffs(), "День"), tariffs_to_table_data(clone_tariffs(), "Ночь")
     tariffs = state["tariffs"]
     records = state["records"]
     return (
@@ -537,6 +539,7 @@ def sync_user_session(username: str | None):
         state["theme"],
         tariffs,
         records,
+        {},
         tariffs_to_table_data(tariffs, "День"),
         tariffs_to_table_data(tariffs, "Ночь"),
     )
@@ -614,46 +617,53 @@ def render_license_list(tariffs: dict | None, period: str | None):
 
 @app.callback(
     Output("records-store", "data", allow_duplicate=True),
-    Input({"type": "add-license", "period": ALL, "code": ALL, "status": ALL}, "n_clicks_timestamp"),
+    Output("click-state", "data", allow_duplicate=True),
+    Input({"type": "add-license", "period": ALL, "code": ALL, "status": ALL}, "n_clicks"),
     Input("delete-row-btn", "n_clicks"),
     State("tariffs-store", "data"),
     State("records-store", "data"),
     State("records-table", "selected_rows"),
+    State({"type": "add-license", "period": ALL, "code": ALL, "status": ALL}, "id"),
+    State("click-state", "data"),
     prevent_initial_call=True,
 )
-def mutate_records(_, __, tariffs: dict, records: list[dict] | None, selected_rows: list[int] | None):
+def mutate_records(clicks, delete_clicks, tariffs: dict, records: list[dict] | None, selected_rows: list[int] | None, button_ids, click_state: dict | None):
     records = [normalize_record(record) for record in (records or [])]
+    click_state = click_state or {}
     trigger = callback_context.triggered_id
     if isinstance(trigger, dict) and trigger.get("type") == "add-license":
-        if not callback_context.triggered:
-            return no_update
-        triggered_value = callback_context.triggered[0].get("value")
-        if not triggered_value:
-            return no_update
-        period = trigger["period"]
-        code = trigger["code"]
-        status = trigger["status"]
-        item = next(item for item in tariffs[period] if item["code"] == code)
-        next_id = max([record["id"] for record in records], default=0) + 1
-        records.append(
-            {
-                "id": next_id,
-                "period": period,
-                "code": item["code"],
-                "name": item["name"],
-                "status": status,
-                "price": int(item["price"]),
-                "treasury": int(item["treasury"]),
-                "cash": int(item["cash"]),
-            }
-        )
-        return records
+        for button_id, click_count in zip(button_ids, clicks):
+            key = json.dumps(button_id, ensure_ascii=False, sort_keys=True)
+            previous_clicks = int(click_state.get(key, 0))
+            current_clicks = int(click_count or 0)
+            if current_clicks > previous_clicks:
+                period = button_id["period"]
+                code = button_id["code"]
+                status = button_id["status"]
+                item = next(item for item in tariffs[period] if item["code"] == code)
+                next_id = max([record["id"] for record in records], default=0) + 1
+                records.append(
+                    {
+                        "id": next_id,
+                        "period": period,
+                        "code": item["code"],
+                        "name": item["name"],
+                        "status": status,
+                        "price": int(item["price"]),
+                        "treasury": int(item["treasury"]),
+                        "cash": int(item["cash"]),
+                    }
+                )
+                click_state[key] = current_clicks
+                return records, click_state
+            click_state[key] = current_clicks
+        return no_update, click_state
     if trigger == "delete-row-btn" and selected_rows:
         selected_index = selected_rows[0]
         if 0 <= selected_index < len(records):
             records.pop(selected_index)
-        return records
-    return records
+        return records, click_state
+    return no_update, click_state
 
 
 @app.callback(
