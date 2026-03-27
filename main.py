@@ -614,19 +614,21 @@ def render_license_list(tariffs: dict | None, period: str | None):
 
 @app.callback(
     Output("records-store", "data", allow_duplicate=True),
-    Input({"type": "add-license", "period": ALL, "code": ALL, "status": ALL}, "n_clicks"),
+    Input({"type": "add-license", "period": ALL, "code": ALL, "status": ALL}, "n_clicks_timestamp"),
     Input("delete-row-btn", "n_clicks"),
-    State("selected-period", "data"),
     State("tariffs-store", "data"),
     State("records-store", "data"),
     State("records-table", "selected_rows"),
     prevent_initial_call=True,
 )
-def mutate_records(_, __, selected_period: str, tariffs: dict, records: list[dict] | None, selected_rows: list[int] | None):
+def mutate_records(_, __, tariffs: dict, records: list[dict] | None, selected_rows: list[int] | None):
     records = [normalize_record(record) for record in (records or [])]
     trigger = callback_context.triggered_id
     if isinstance(trigger, dict) and trigger.get("type") == "add-license":
-        if not callback_context.triggered or not callback_context.triggered[0].get("value"):
+        if not callback_context.triggered:
+            return no_update
+        triggered_value = callback_context.triggered[0].get("value")
+        if not triggered_value:
             return no_update
         period = trigger["period"]
         code = trigger["code"]
