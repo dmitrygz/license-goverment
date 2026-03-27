@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: license-goverment
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn main:server
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: DATABASE_PATH
+        value: /opt/render/project/src/license_app.db
