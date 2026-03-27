@@ -479,6 +479,17 @@ body {
   z-index: 30;
 }
 
+.history-filter-panel {
+  position: relative;
+  z-index: 80 !important;
+  overflow: visible !important;
+}
+
+.history-archive-panel {
+  position: relative;
+  z-index: 1 !important;
+}
+
 .history-filters .SingleDatePickerInput,
 .history-filters .DateRangePickerInput,
 .history-filters .Select-control,
@@ -505,6 +516,14 @@ body {
 .DateRangePicker_picker,
 .DateRangePicker_picker__portal {
   box-shadow: 0 24px 60px rgba(15, 19, 24, 0.18) !important;
+  position: absolute !important;
+}
+
+.history-filter-panel .DateRangePicker_picker,
+.history-filter-panel .DateRangePicker_picker__portal,
+.history-filter-panel .DayPicker,
+.history-filter-panel .DayPicker_transitionContainer {
+  z-index: 10000 !important;
 }
 
 .DateInput,
@@ -526,6 +545,13 @@ body {
 .custom-tabs-wrap > div,
 .custom-tabs-wrap > div > div {
   overflow: visible !important;
+}
+
+.history-archive-panel .dash-table-container,
+.history-archive-panel .dash-spreadsheet-container,
+.history-archive-panel .dash-spreadsheet-inner {
+  position: relative;
+  z-index: 1 !important;
 }
 
 .theme-switch {

@@ -599,7 +599,7 @@ def app_layout() -> html.Div:
                                                 className="settings-grid fade-up",
                                                 children=[
                                                     html.Div(
-                                                        className="panel",
+                                                        className="panel history-filter-panel",
                                                         children=[
                                                             html.Div("Тема оформления", className="panel-title"),
                                                             html.Div("Выбери светлую или черную тему интерфейса.", className="panel-subtitle"),
@@ -613,7 +613,7 @@ def app_layout() -> html.Div:
                                                         ],
                                                     ),
                                                     html.Div(
-                                                        className="panel",
+                                                        className="panel history-archive-panel",
                                                         children=[
                                                             html.Div("Тарифы - День", className="panel-title"),
                                                             dash_table.DataTable(
