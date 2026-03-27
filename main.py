@@ -387,7 +387,7 @@ def app_layout() -> html.Div:
                                                                 id="records-table",
                                                                 columns=[{"name": name, "id": name} for name in ["№", "Время", "Код", "Лицензия", "Статус", "Продажа", "В казну", "На руки"]],
                                                                 data=[],
-                                                                row_selectable="single",
+                                                                row_selectable="multi",
                                                                 selected_rows=[],
                                                                 page_size=10,
                                                                 style_as_list_view=True,
@@ -659,9 +659,8 @@ def mutate_records(clicks, delete_clicks, tariffs: dict, records: list[dict] | N
             click_state[key] = current_clicks
         return no_update, click_state
     if trigger == "delete-row-btn" and selected_rows:
-        selected_index = selected_rows[0]
-        if 0 <= selected_index < len(records):
-            records.pop(selected_index)
+        selected_set = set(selected_rows)
+        records = [record for index, record in enumerate(records) if index not in selected_set]
         return records, click_state
     return no_update, click_state
 
