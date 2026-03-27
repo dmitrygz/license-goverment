@@ -104,6 +104,9 @@ body {
 .custom-tabs-wrap,
 .main-tabs-wrap {
   margin-top: 16px;
+  position: relative;
+  z-index: 1;
+  overflow: visible !important;
 }
 
 .custom-tabs,
@@ -112,6 +115,7 @@ body {
   gap: 10px;
   background: transparent !important;
   border: 0 !important;
+  overflow: visible !important;
 }
 
 .custom-tab,
@@ -323,6 +327,8 @@ body {
 .panel {
   padding: 18px;
   overflow: visible;
+  position: relative;
+  z-index: 1;
 }
 
 .panel-title {
@@ -469,6 +475,8 @@ body {
   grid-template-columns: 1.3fr 240px;
   gap: 12px;
   margin-top: 14px;
+  position: relative;
+  z-index: 30;
 }
 
 .history-filters .SingleDatePickerInput,
@@ -478,6 +486,46 @@ body {
   border-radius: 14px !important;
   border: 1px solid var(--line) !important;
   background: var(--panel-solid) !important;
+}
+
+.DateRangePicker,
+.DateRangePickerInput,
+.DateInput,
+.DateInput_input,
+.DateRangePicker_picker,
+.DateRangePicker_picker__portal,
+.DayPicker,
+.DayPicker_transitionContainer,
+.CalendarMonthGrid,
+.CalendarMonth,
+.DateRangePickerInput__withBorder {
+  z-index: 9999 !important;
+}
+
+.DateRangePicker_picker,
+.DateRangePicker_picker__portal {
+  box-shadow: 0 24px 60px rgba(15, 19, 24, 0.18) !important;
+}
+
+.DateInput,
+.DateInput_input {
+  background: var(--panel-solid) !important;
+  color: var(--text) !important;
+}
+
+.DateRangePickerInput {
+  background: var(--panel-solid) !important;
+}
+
+.DateRangePickerInput_arrow {
+  color: var(--muted) !important;
+}
+
+.main-tabs-wrap > div,
+.main-tabs-wrap > div > div,
+.custom-tabs-wrap > div,
+.custom-tabs-wrap > div > div {
+  overflow: visible !important;
 }
 
 .theme-switch {
