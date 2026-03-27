@@ -519,6 +519,11 @@ body {
   position: absolute !important;
 }
 
+.DateRangePicker_picker__portal {
+  position: fixed !important;
+  z-index: 20000 !important;
+}
+
 .history-filter-panel .DateRangePicker_picker,
 .history-filter-panel .DateRangePicker_picker__portal,
 .history-filter-panel .DayPicker,

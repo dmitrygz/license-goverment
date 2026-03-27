@@ -668,7 +668,13 @@ def app_layout() -> html.Div:
                                                             html.Div(
                                                                 className="history-filters",
                                                                 children=[
-                                                                    dcc.DatePickerRange(id="history-dates", display_format="YYYY-MM-DD"),
+                                                                    dcc.DatePickerRange(
+                                                                        id="history-dates",
+                                                                        display_format="YYYY-MM-DD",
+                                                                        with_portal=True,
+                                                                        number_of_months_shown=1,
+                                                                        minimum_nights=0,
+                                                                    ),
                                                                     dcc.Dropdown(
                                                                         id="history-period",
                                                                         options=[
