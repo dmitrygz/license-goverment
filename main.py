@@ -117,6 +117,17 @@ def init_db() -> None:
             connection.commit()
         except Exception:
             connection.rollback()
+        cursor.execute("SELECT COUNT(*) FROM users WHERE role = 'admin'")
+        admin_count = int(cursor.fetchone()[0])
+        if admin_count == 0:
+            cursor.execute("SELECT username FROM users ORDER BY id ASC LIMIT 1")
+            first_user = cursor.fetchone()
+            if first_user:
+                if USE_POSTGRES:
+                    cursor.execute("UPDATE users SET role = %s WHERE username = %s", ("admin", first_user[0]))
+                else:
+                    cursor.execute("UPDATE users SET role = ? WHERE username = ?", ("admin", first_user[0]))
+                connection.commit()
 
 
 def fetchone(query: str, params: tuple = ()) -> tuple | None:
@@ -372,6 +383,46 @@ def fetch_license_history(username: str) -> list[dict]:
             }
         )
     return history
+
+
+def fetch_users_for_admin(username: str) -> list[dict]:
+    state = load_user_state(username)
+    if not state or state.get("role") != "admin":
+        return []
+    rows = fetchall("SELECT username, role, created_at FROM users ORDER BY username")
+    return [
+        {
+            "Пользователь": row[0],
+            "Роль": row[1],
+            "Создан": str(row[2]),
+        }
+        for row in rows
+    ]
+
+
+def update_user_role(actor_username: str, target_username: str, new_role: str) -> tuple[bool, str]:
+    actor_state = load_user_state(actor_username)
+    if not actor_state or actor_state.get("role") != "admin":
+        return False, "Недостаточно прав."
+    target_state = load_user_state(target_username)
+    if not target_state:
+        return False, "Пользователь не найден."
+    if actor_username == target_username and new_role != "admin":
+        return False, "Нельзя снять роль администратора у самого себя."
+    if USE_POSTGRES:
+        execute("UPDATE users SET role = %s WHERE username = %s", (new_role, target_username))
+    else:
+        execute("UPDATE users SET role = ? WHERE username = ?", (new_role, target_username))
+    add_action_log(
+        actor_username,
+        "change_role",
+        {
+            "message": f"Изменена роль пользователя {target_username} на {new_role}",
+            "target_username": target_username,
+            "new_role": new_role,
+        },
+    )
+    return True, "Роль пользователя обновлена."
 
 
 def build_breakdown(records: list[dict]) -> str:
@@ -790,6 +841,45 @@ def app_layout() -> html.Div:
                                             )
                                         ],
                                     ),
+                                    dcc.Tab(
+                                        id="admin-tab",
+                                        label="Админы",
+                                        value="admin",
+                                        className="main-tab",
+                                        selected_className="main-tab-selected",
+                                        children=[
+                                            html.Div(
+                                                className="settings-grid fade-up",
+                                                children=[
+                                                    html.Div(
+                                                        className="panel",
+                                                        children=[
+                                                            html.Div("Управление администраторами", className="panel-title"),
+                                                            html.Div("Здесь можно просматривать аккаунты и менять роли пользователей.", className="panel-subtitle"),
+                                                            html.Div(
+                                                                className="settings-actions",
+                                                                children=[
+                                                                    html.Button("Назначить админом", id="promote-user-btn", className="action-btn action-success", n_clicks=0),
+                                                                    html.Button("Понизить до user", id="demote-user-btn", className="action-btn action-danger", n_clicks=0),
+                                                                ],
+                                                            ),
+                                                            html.Div(id="admin-message", className="auth-message"),
+                                                            dash_table.DataTable(
+                                                                id="users-table",
+                                                                columns=[{"name": name, "id": name} for name in ["Пользователь", "Роль", "Создан"]],
+                                                                data=[],
+                                                                row_selectable="single",
+                                                                selected_rows=[],
+                                                                page_size=12,
+                                                                style_table={"overflowX": "auto"},
+                                                                style_cell={"padding": "14px 12px", "whiteSpace": "normal", "height": "auto", "lineHeight": "1.45", "textAlign": "left"},
+                                                            ),
+                                                        ],
+                                                    ),
+                                                ],
+                                            )
+                                        ],
+                                    ),
                                 ],
                             ),
                         ],
@@ -922,8 +1012,10 @@ def switch_period(day_clicks, night_clicks, go_settings, current_period):
 @app.callback(
     Output("history-tab", "style"),
     Output("journal-tab", "style"),
+    Output("admin-tab", "style"),
     Output("history-tab", "disabled"),
     Output("journal-tab", "disabled"),
+    Output("admin-tab", "disabled"),
     Output("main-tabs", "value", allow_duplicate=True),
     Input("user-role", "data"),
     State("main-tabs", "value"),
@@ -933,9 +1025,9 @@ def guard_admin_tabs(role: str | None, current_tab: str):
     is_admin = role == "admin"
     hidden_style = {} if is_admin else {"display": "none"}
     next_tab = current_tab
-    if not is_admin and current_tab in {"history", "journal"}:
+    if not is_admin and current_tab in {"history", "journal", "admin"}:
         next_tab = "work"
-    return hidden_style, hidden_style, (not is_admin), (not is_admin), next_tab
+    return hidden_style, hidden_style, hidden_style, (not is_admin), (not is_admin), (not is_admin), next_tab
 
 
 @app.callback(
@@ -1072,22 +1164,25 @@ def save_settings(_, session_user: str | None, theme: str, day_rows: list[dict],
     Output("records-table", "style_data"),
     Output("history-table", "style_data"),
     Output("journal-table", "style_data"),
+    Output("users-table", "style_data"),
     Input("user-theme", "data"),
 )
 def table_styles(theme: str | None):
     palette = THEMES[theme or "Светлая"]
     style = {"backgroundColor": "#ffffff" if palette["page"] == "theme-light" else "#1b2129", "color": "#26313d" if palette["page"] == "theme-light" else "#eff3f8"}
-    return (style, style, style, style, style)
+    return (style, style, style, style, style, style)
 
 
 @app.callback(
     Output("auth-message", "className"),
     Output("settings-message", "className"),
+    Output("admin-message", "className"),
     Input("auth-message", "children"),
     Input("settings-message", "children"),
+    Input("admin-message", "children"),
 )
-def message_classes(_, __):
-    return "auth-message visible", "auth-message visible"
+def message_classes(_, __, ___):
+    return "auth-message visible", "auth-message visible", "auth-message visible"
 
 
 @app.callback(
@@ -1126,6 +1221,44 @@ def render_history_and_journal(username: str | None, role: str | None, records, 
         history = [row for row in history if row["Дата"] <= end_date]
     journal = [{key: row[key] for key in ("Пользователь", "Время", "Действие", "Описание")} for row in fetch_action_logs(username)]
     return history, journal
+
+
+@app.callback(
+    Output("users-table", "data"),
+    Input("session-user", "data"),
+    Input("user-role", "data"),
+    Input("admin-message", "children"),
+)
+def render_users_table(username: str | None, role: str | None, _message):
+    if not username or role != "admin":
+        return []
+    return fetch_users_for_admin(username)
+
+
+@app.callback(
+    Output("admin-message", "children"),
+    Input("promote-user-btn", "n_clicks"),
+    Input("demote-user-btn", "n_clicks"),
+    State("session-user", "data"),
+    State("user-role", "data"),
+    State("users-table", "data"),
+    State("users-table", "selected_rows"),
+    prevent_initial_call=True,
+)
+def manage_user_roles(promote_clicks, demote_clicks, session_user: str | None, role: str | None, table_data: list[dict] | None, selected_rows: list[int] | None):
+    if not session_user or role != "admin":
+        return "Недостаточно прав."
+    if not selected_rows:
+        return "Сначала выбери пользователя в таблице."
+    selected_index = selected_rows[0]
+    rows = table_data or []
+    if selected_index >= len(rows):
+        return "Не удалось определить выбранного пользователя."
+    target_username = rows[selected_index]["Пользователь"]
+    trigger = callback_context.triggered_id
+    new_role = "admin" if trigger == "promote-user-btn" else "user"
+    success, message = update_user_role(session_user, target_username, new_role)
+    return message
 
 
 if __name__ == "__main__":
