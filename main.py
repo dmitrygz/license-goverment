@@ -425,6 +425,30 @@ def update_user_role(actor_username: str, target_username: str, new_role: str) -
     return True, "Роль пользователя обновлена."
 
 
+def delete_user_account(actor_username: str, target_username: str) -> tuple[bool, str]:
+    actor_state = load_user_state(actor_username)
+    if not actor_state or actor_state.get("role") != "admin":
+        return False, "Недостаточно прав."
+    target_state = load_user_state(target_username)
+    if not target_state:
+        return False, "Пользователь не найден."
+    if actor_username == target_username:
+        return False, "Нельзя удалить собственный аккаунт."
+    if USE_POSTGRES:
+        execute("DELETE FROM users WHERE username = %s", (target_username,))
+    else:
+        execute("DELETE FROM users WHERE username = ?", (target_username,))
+    add_action_log(
+        actor_username,
+        "delete_user",
+        {
+            "message": f"Удален аккаунт пользователя {target_username}",
+            "target_username": target_username,
+        },
+    )
+    return True, "Аккаунт пользователя удален."
+
+
 def build_breakdown(records: list[dict]) -> str:
     lines = ["Итоги:"]
     for period in ("День", "Ночь"):
@@ -861,6 +885,7 @@ def app_layout() -> html.Div:
                                                                 children=[
                                                                     html.Button("Назначить админом", id="promote-user-btn", className="action-btn action-success", n_clicks=0),
                                                                     html.Button("Понизить до user", id="demote-user-btn", className="action-btn action-danger", n_clicks=0),
+                                                                    html.Button("Удалить аккаунт", id="delete-user-btn", className="action-btn action-danger", n_clicks=0),
                                                                 ],
                                                             ),
                                                             html.Div(id="admin-message", className="auth-message"),
@@ -1145,6 +1170,9 @@ def mutate_records(clicks, delete_clicks, session_user: str | None, tariffs: dic
     prevent_initial_call=True,
 )
 def save_settings(_, session_user: str | None, theme: str, day_rows: list[dict], night_rows: list[dict]):
+    session_state = load_user_state(session_user) if session_user else None
+    if not session_state or session_state.get("role") != "admin":
+        return no_update, no_update, "Изменять тарифы может только администратор.", "settings"
     try:
         tariffs = merge_tariff_tables(day_rows, night_rows)
         for period in tariffs:
@@ -1165,12 +1193,17 @@ def save_settings(_, session_user: str | None, theme: str, day_rows: list[dict],
     Output("history-table", "style_data"),
     Output("journal-table", "style_data"),
     Output("users-table", "style_data"),
+    Output("day-tariffs-table", "editable"),
+    Output("night-tariffs-table", "editable"),
+    Output("save-settings-btn", "disabled"),
     Input("user-theme", "data"),
+    Input("user-role", "data"),
 )
-def table_styles(theme: str | None):
+def table_styles(theme: str | None, role: str | None):
     palette = THEMES[theme or "Светлая"]
     style = {"backgroundColor": "#ffffff" if palette["page"] == "theme-light" else "#1b2129", "color": "#26313d" if palette["page"] == "theme-light" else "#eff3f8"}
-    return (style, style, style, style, style, style)
+    can_edit = role == "admin"
+    return (style, style, style, style, style, style, can_edit, can_edit, not can_edit)
 
 
 @app.callback(
@@ -1239,13 +1272,14 @@ def render_users_table(username: str | None, role: str | None, _message):
     Output("admin-message", "children"),
     Input("promote-user-btn", "n_clicks"),
     Input("demote-user-btn", "n_clicks"),
+    Input("delete-user-btn", "n_clicks"),
     State("session-user", "data"),
     State("user-role", "data"),
     State("users-table", "data"),
     State("users-table", "selected_rows"),
     prevent_initial_call=True,
 )
-def manage_user_roles(promote_clicks, demote_clicks, session_user: str | None, role: str | None, table_data: list[dict] | None, selected_rows: list[int] | None):
+def manage_user_roles(promote_clicks, demote_clicks, delete_clicks, session_user: str | None, role: str | None, table_data: list[dict] | None, selected_rows: list[int] | None):
     if not session_user or role != "admin":
         return "Недостаточно прав."
     if not selected_rows:
@@ -1256,8 +1290,11 @@ def manage_user_roles(promote_clicks, demote_clicks, session_user: str | None, r
         return "Не удалось определить выбранного пользователя."
     target_username = rows[selected_index]["Пользователь"]
     trigger = callback_context.triggered_id
-    new_role = "admin" if trigger == "promote-user-btn" else "user"
-    success, message = update_user_role(session_user, target_username, new_role)
+    if trigger == "delete-user-btn":
+        success, message = delete_user_account(session_user, target_username)
+    else:
+        new_role = "admin" if trigger == "promote-user-btn" else "user"
+        success, message = update_user_role(session_user, target_username, new_role)
     return message
 
 
